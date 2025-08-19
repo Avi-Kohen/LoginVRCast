@@ -47,10 +47,8 @@ def start_scrcpy(renderer: str = "OpenGL"):
     args = [
         SCRCPY,
         "--no-audio",
-        "--client-crop=1600:904:2017:510",
+        "--crop=1600:904:2017:510",
         "--always-on-top",
-        "--window-width=1600",
-        "--window-height=904",
         f"--render-driver={sdl_driver}",
     ]
 

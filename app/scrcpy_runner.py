@@ -5,31 +5,14 @@ BIN_DIR  = os.path.join(APP_ROOT, "bin")
 
 ADB = os.path.join(BIN_DIR, "adb.exe")
 SCRCPY = os.path.join(BIN_DIR, "scrcpy.exe")
-SCRCPY_SERVER = os.path.join(BIN_DIR, "scrcpy-server")  # וידוא קיום
-
-CROP = "1600:904:2017:510"  # חיתוך עין שמאל ב-Quest
-
-# מיפוי פרופילים בעברית -> הגדרות
-PRESETS = {
-    "נמוך":  {"max_size": "1280", "max_fps": "30", "bitrate": "6M"},
-    "בינוני": {"max_size": "1600", "max_fps": "45", "bitrate": "10M"},
-    "גבוה":  {"max_size": "1920", "max_fps": "60", "bitrate": "16M"},
-}
-
-def _check_bin():
-    for p in (ADB, SCRCPY, SCRCPY_SERVER):
-        if not os.path.exists(p):
-            return False, f"‏קובץ חסר: {p}"
-    return True, "ok"
 
 def adb_devices():
     if not os.path.exists(ADB):
         return []
     try:
-        out = subprocess.check_output([ADB, "devices"], stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="ignore")
+        out = subprocess.check_output([ADB, "devices"], text=True, encoding="utf-8", errors="ignore")
         lines = [l.strip() for l in out.splitlines()[1:] if l.strip()]
-        serials = [l.split()[0] for l in lines if "device" in l]
-        return serials
+        return [l.split()[0] for l in lines if "device" in l]
     except Exception:
         return []
 
@@ -42,39 +25,33 @@ def status():
     if dev:
         return {"state": "ready", "text": f"מכשיר מזוהה: {dev}"}
     else:
-        return {"state": "none", "text": "אין מכשיר. חבר USB או השתמש ב'חיבור אלחוטי'."}
+        return {"state": "none", "text": "אין מכשיר מחובר"}
 
 def wireless_connect(ip_port: str, pairing_code: str = None):
-    """
-    ip_port לדוגמה: 192.168.1.50:5555
-    אם יש pairing_code, נבצע צימוד (Android 11+).
-    """
     if pairing_code:
         subprocess.call([ADB, "pair", ip_port, pairing_code])
-    return subprocess.call([ADB, "connect", ip_port])  # 0 = הצלחה
+    return subprocess.call([ADB, "connect", ip_port])
 
-def start_scrcpy(preset_name: str):
-    ok, msg = _check_bin()
-    if not ok:
-        raise RuntimeError(msg)
+def _map_renderer_name(human_name: str) -> str:
+    # שמות שנתמכים ב-SDL2: "direct3d", "opengl", "opengles2", "software"
+    name = (human_name or "").strip().lower()
+    if name.startswith("open"):
+        return "opengl"
+    return "direct3d"
 
-    preset = PRESETS.get(preset_name, PRESETS["בינוני"])
+def start_scrcpy(renderer: str = "OpenGL"):
+    sdl_driver = _map_renderer_name(renderer)
+    # אופציונלי: להכריח גם דרך משתנה סביבה
+    os.environ.setdefault("SDL_RENDER_DRIVER", sdl_driver)
 
     args = [
         SCRCPY,
         "--no-audio",
-        f"--crop={CROP}",
-        f"--max-size={preset['max_size']}",
-        f"--max-fps={preset['max_fps']}",
-        f"--bit-rate={preset['bitrate']}",
-        "--window-borderless",
+        "--client-crop=1600:904:2017:510",
         "--always-on-top",
-        "--stay-awake",
-        "--window-title=LoginVRCast",
+        "--window-width=1600",
+        "--window-height=904",
+        f"--render-driver={sdl_driver}",
     ]
-
-    dev = first_device_or_none()
-    if dev:
-        args.append(f"--serial={dev}")
 
     return subprocess.Popen(args, cwd=BIN_DIR)

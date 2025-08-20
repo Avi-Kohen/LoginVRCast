@@ -20,37 +20,42 @@ class StatusLight(QFrame):
         self.setStyleSheet(f"border-radius: 8px; background: {palette.get(color, '#9aa0a6')};")
 
 class MainWindow(QMainWindow):
-    def __init__(self, on_cast, on_wireless, on_renderer_changed, on_stop, get_status):
+    def __init__(self, on_cast, on_wireless, on_renderer_changed, on_cropmode_changed, on_stop, get_status):
         super().__init__()
         self.setWindowTitle("LoginVRCast")
         self.setMinimumSize(600, 210)
         self.setLayoutDirection(Qt.RightToLeft)
-        
 
         # כפתורים
         self.cast_btn = QPushButton("שידור")
         self.stop_btn = QPushButton("עצור")
         self.wireless_btn = QPushButton("חיבור אלחוטי")
 
-        # בורר מנוע גרפי
+        # בוררי מנוע/חיתוך
         self.renderer_combo = QComboBox()
         self.renderer_combo.addItems(["OpenGL", "Direct3D"])
+
+        self.cropmode_combo = QComboBox()
+        self.cropmode_combo.addItems([ "crop","client-crop"])  # ברירת מחדל: client-crop למי שמעדיף 1:1, אך נוכל לשנות בהמשך
 
         # סטטוס
         self.status_light = StatusLight("red")
         self.status_label = QLabel("מכשיר לא מחובר")
 
-        # שורה עליונה: שידור/עצור/אלחוטי
+        # שורה עליונה
         top = QHBoxLayout()
         top.addWidget(self.cast_btn)
         top.addWidget(self.stop_btn)
         top.addWidget(self.wireless_btn)
         top.addStretch(1)
 
-        # שורת הגדרות: מנוע גרפי
+        # שורת הגדרות
         mid = QHBoxLayout()
         mid.addWidget(QLabel("מנוע גרפי:"))
         mid.addWidget(self.renderer_combo)
+        mid.addSpacing(16)
+        mid.addWidget(QLabel("מצב חיתוך:"))
+        mid.addWidget(self.cropmode_combo)
         mid.addStretch(1)
 
         # סטטוס
@@ -76,6 +81,7 @@ class MainWindow(QMainWindow):
         self.stop_btn.clicked.connect(on_stop)
         self.wireless_btn.clicked.connect(lambda: on_wireless(self.wireless_btn))
         self.renderer_combo.currentTextChanged.connect(on_renderer_changed)
+        self.cropmode_combo.currentTextChanged.connect(on_cropmode_changed)
 
         # רענון סטטוס
         self._get_status = get_status
@@ -83,6 +89,7 @@ class MainWindow(QMainWindow):
         self._timer.timeout.connect(self.refresh_status)
         self._timer.start(2000)
         self.refresh_status()
+
 
     def refresh_status(self):
         s = self._get_status()

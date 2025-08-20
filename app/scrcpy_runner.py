@@ -1,4 +1,3 @@
-# app/scrcpy_runner.py  (patch)
 import os, sys, re, subprocess, time
 
 def resource_path(name: str) -> str:
@@ -266,22 +265,28 @@ def _map_renderer_name(human_name: str) -> str:
     name = (human_name or "").strip().lower()
     return "opengl" if name.startswith("open") else "direct3d"
 
-def start_scrcpy(renderer: str = "OpenGL"):
+def start_scrcpy(renderer: str = "OpenGL", crop_mode: str = "crop"):
     sdl_driver = _map_renderer_name(renderer)
+
+    # בחר את הדגל לפי הבורר: "crop" או "client-crop"
+    crop_key = "client-crop" if str(crop_mode).lower().startswith("client") else "crop"
+    crop_arg = f"--{crop_key}=1600:904:2017:510"
+
     args = [
         SCRCPY,
         "--no-audio",
-        "--crop=1600:904:2017:510",
+        crop_arg,               # 👈 כאן מתחלף הדגל לפי הבחירה
         "--always-on-top",
+        "--stay-awake",
         f"--render-driver={sdl_driver}",
     ]
+
     dev = first_device_or_none()
     if dev:
         args.append(f"--serial={dev}")
-        
+
     env = os.environ.copy()
     env["SDL_RENDER_DRIVER"] = sdl_driver
 
- # IMPORTANT: run with cwd set to the folder containing scrcpy.exe
     scrcpy_dir = os.path.dirname(SCRCPY)
     return subprocess.Popen(args, cwd=scrcpy_dir, env=env, creationflags=CREATE_NO_WINDOW)

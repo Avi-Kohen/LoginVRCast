@@ -19,6 +19,7 @@ if (Test-Path ".\dist")  { Remove-Item ".\dist"  -Recurse -Force }
 # === ONE-FILE ===
 pyinstaller --noconfirm --clean --onefile `
   --name "LoginVRCast" app\main.py `
+  --noconsole `
   --add-binary "bin\adb.exe;." `
   --add-binary "bin\AdbWinApi.dll;." `
   --add-binary "bin\AdbWinUsbApi.dll;." `
@@ -30,6 +31,7 @@ pyinstaller --noconfirm --clean --onefile `
 # === PORTABLE (ONE-DIR) ===
 pyinstaller --noconfirm --onedir `
   --name "LoginVRCast_portable" app\main.py `
+  --noconsole `
   --add-binary "bin\adb.exe;bin" `
   --add-binary "bin\AdbWinApi.dll;bin" `
   --add-binary "bin\AdbWinUsbApi.dll;bin" `
@@ -82,3 +84,11 @@ if (Test-Path $portableDir) {
 
 
 Write-Host "Done. One-file: dist\LoginVRCast.exe | Portable: dist\LoginVRCast_portable.zip"
+if (Test-Path ".\dist\LoginVRCast.exe") {
+    (Get-FileHash ".\dist\LoginVRCast.exe" -Algorithm SHA256).Hash |
+        Out-File ".\dist\LoginVRCast.exe.sha256.txt" -Encoding ascii
+}
+if (Test-Path ".\dist\LoginVRCast_portable.zip") {
+    (Get-FileHash ".\dist\LoginVRCast_portable.zip" -Algorithm SHA256).Hash |
+        Out-File ".\dist\LoginVRCast_portable.zip.sha256.txt" -Encoding ascii
+}

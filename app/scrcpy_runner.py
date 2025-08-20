@@ -17,15 +17,12 @@ def adb_devices():
         return []
 
 def first_device_or_none():
-    devices = adb_devices()
-    return devices[0] if devices else None
+    devs = adb_devices()
+    return devs[0] if devs else None
 
 def status():
     dev = first_device_or_none()
-    if dev:
-        return {"state": "ready", "text": f"מכשיר מזוהה: {dev}"}
-    else:
-        return {"state": "none", "text": "אין מכשיר מחובר"}
+    return {"state": "ready", "text": f"מכשיר מזוהה: {dev}"} if dev else {"state": "none", "text": "אין מכשיר מחובר"}
 
 def wireless_connect(ip_port: str, pairing_code: str = None):
     if pairing_code:
@@ -33,7 +30,6 @@ def wireless_connect(ip_port: str, pairing_code: str = None):
     return subprocess.call([ADB, "connect", ip_port])
 
 def _map_renderer_name(human_name: str) -> str:
-    # שמות שנתמכים ב-SDL2: "direct3d", "opengl", "opengles2", "software"
     name = (human_name or "").strip().lower()
     if name.startswith("open"):
         return "opengl"
@@ -41,15 +37,21 @@ def _map_renderer_name(human_name: str) -> str:
 
 def start_scrcpy(renderer: str = "OpenGL"):
     sdl_driver = _map_renderer_name(renderer)
-    # אופציונלי: להכריח גם דרך משתנה סביבה
-    os.environ.setdefault("SDL_RENDER_DRIVER", sdl_driver)
 
     args = [
         SCRCPY,
         "--no-audio",
         "--crop=1600:904:2017:510",
         "--always-on-top",
-        f"--render-driver={sdl_driver}",
+        f"--render-driver={sdl_driver}",  # CLI hint to SDL
     ]
 
-    return subprocess.Popen(args, cwd=BIN_DIR)
+    dev = first_device_or_none()
+    if dev:
+        args.append(f"--serial={dev}")
+
+    # Pass a fresh environment so renderer changes take effect every run
+    env = os.environ.copy()
+    env["SDL_RENDER_DRIVER"] = sdl_driver
+
+    return subprocess.Popen(args, cwd=BIN_DIR, env=env)

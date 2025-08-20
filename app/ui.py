@@ -20,14 +20,15 @@ class StatusLight(QFrame):
         self.setStyleSheet(f"border-radius: 8px; background: {palette.get(color, '#9aa0a6')};")
 
 class MainWindow(QMainWindow):
-    def __init__(self, on_cast, on_wireless, on_renderer_changed, get_status):
+    def __init__(self, on_cast, on_wireless, on_renderer_changed, on_stop, get_status):
         super().__init__()
         self.setWindowTitle("LoginVRCast")
-        self.setMinimumSize(560, 200)
+        self.setMinimumSize(600, 210)
         self.setLayoutDirection(Qt.RightToLeft)
 
         # כפתורים
         self.cast_btn = QPushButton("שידור")
+        self.stop_btn = QPushButton("עצור")
         self.wireless_btn = QPushButton("חיבור אלחוטי")
 
         # בורר מנוע גרפי
@@ -38,17 +39,20 @@ class MainWindow(QMainWindow):
         self.status_light = StatusLight("red")
         self.status_label = QLabel("מכשיר לא מחובר")
 
-        # פריסות
+        # שורה עליונה: שידור/עצור/אלחוטי
         top = QHBoxLayout()
         top.addWidget(self.cast_btn)
+        top.addWidget(self.stop_btn)
         top.addWidget(self.wireless_btn)
         top.addStretch(1)
 
+        # שורת הגדרות: מנוע גרפי
         mid = QHBoxLayout()
         mid.addWidget(QLabel("מנוע גרפי:"))
         mid.addWidget(self.renderer_combo)
         mid.addStretch(1)
 
+        # סטטוס
         status = QHBoxLayout()
         status.addWidget(QLabel("מצב:"))
         status.addWidget(self.status_light)
@@ -68,6 +72,7 @@ class MainWindow(QMainWindow):
 
         # חיבורים
         self.cast_btn.clicked.connect(on_cast)
+        self.stop_btn.clicked.connect(on_stop)
         self.wireless_btn.clicked.connect(on_wireless)
         self.renderer_combo.currentTextChanged.connect(on_renderer_changed)
 

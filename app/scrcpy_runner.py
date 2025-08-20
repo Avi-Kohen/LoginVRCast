@@ -1,40 +1,68 @@
-import os, re, subprocess, time
+# app/scrcpy_runner.py  (patch)
+import os, sys, re, subprocess, time
 
-APP_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-BIN_DIR  = os.path.join(APP_ROOT, "bin")
+def resource_path(name: str) -> str:
+    """Resolve bundled resources for dev, onedir portable, and onefile."""
+    if hasattr(sys, "_MEIPASS"):  # PyInstaller one-file temp dir
+        p = os.path.join(sys._MEIPASS, name)
+        if os.path.exists(p):
+            return p
+    # portable onedir: alongside exe or in exe_dir\bin
+    if getattr(sys, "frozen", False):
+        exe_dir = os.path.dirname(sys.executable)
+        p = os.path.join(exe_dir, name)
+        if os.path.exists(p):
+            return p
+        p = os.path.join(exe_dir, "bin", name)
+        if os.path.exists(p):
+            return p
+    # dev tree
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(project_root, "bin", name)
 
-ADB = os.path.join(BIN_DIR, "adb.exe")
-SCRCPY = os.path.join(BIN_DIR, "scrcpy.exe")
+ADB = resource_path("adb.exe")
+SCRCPY = resource_path("scrcpy.exe")
+SCRCPY_SERVER = resource_path("scrcpy-server")  # if you need to check it exists
 
 CREATE_NO_WINDOW = 0x08000000
-ADB_TIMEOUT_SEC  = 4
+ADB_TIMEOUT_SEC  = 6
 WIRELESS_PORT    = "5555"
 
 def _run(cmd):
+    """
+    Run a subprocess with cwd set to the directory of the executable in cmd[0].
+    This avoids invalid 'cwd' in one-file builds.
+    """
+    exe_path = cmd[0]
+    workdir = os.path.dirname(exe_path) if os.path.isabs(exe_path) else None
     return subprocess.run(
-        cmd, cwd=BIN_DIR, text=True, capture_output=True, encoding="utf-8",
-        errors="ignore", timeout=ADB_TIMEOUT_SEC, creationflags=CREATE_NO_WINDOW
+        cmd,
+        cwd=workdir,
+        text=True,
+        capture_output=True,
+        encoding="utf-8",
+        errors="ignore",
+        timeout=ADB_TIMEOUT_SEC,
+        creationflags=CREATE_NO_WINDOW,
     )
 
 # ---------- helpers from the working app ----------
 
 def _devices_output() -> str:
-    return _run([ADB, "devices", "-l"]).stdout if os.path.exists(ADB) else ""
+    if not os.path.exists(ADB):
+        return ""
+    return _run([ADB, "devices", "-l"]).stdout
 
 def _is_ip_serial(serial: str) -> bool:
-    return ":" in serial and re.match(r"^\d{1,3}(\.\d{1,3}){3}:\d{2,5}$", serial) is not None
+    return ":" in serial and re.match(r"^\d{1,3}(?:\.\d{1,3}){3}:\d{2,5}$", serial) is not None
 
 def quest_state():
-    """
-    מחזיר (transport, state, serial) עם עדיפות ל‑Wi‑Fi.
-    transport ∈ {"wifi","usb",None}, state ∈ {"device","unauthorized","offline",""}
-    """
     wifi_row = None
     usb_row  = None
     out = _devices_output().splitlines()
     for line in out[1:]:
         parts = line.split()
-        if len(parts) < 2:
+        if len(parts) < 2: 
             continue
         serial, state = parts[0], parts[1]
         if _is_ip_serial(serial):
@@ -56,12 +84,12 @@ def adb_devices():
     return res
 
 def first_device_or_none():
-    # עדיפות ל‑Wi‑Fi, אחרת USB
-    transport, state, serial = quest_state()
+    t, s, serial = quest_state()
     return serial if serial else None
 
 def first_usb_device_or_none():
-    for line in _devices_output().splitlines()[1:]:
+    out = _devices_output().splitlines()
+    for line in out[1:]:
         parts = line.split()
         if len(parts) >= 2 and parts[1] in ("device", "unauthorized", "offline"):
             serial = parts[0]
@@ -70,36 +98,21 @@ def first_usb_device_or_none():
     return None
 
 def status():
-    """
-    מצב קריא ל-UI על בסיס quest_state():
-    - state: "ready" | "pairing" | "none" | "casting" (ה-"casting" ייקבע ב-main.py אם תהליך חי)
-    - text: טקסט ידידותי להצגה למשתמש
-    """
     transport, state, serial = quest_state()
-
-    # אין שום התקן נראה
     if not serial:
         return {"state": "none", "text": "אין מכשיר מחובר"}
-
-    # התקן מזוהה אבל לא מוכן (צריך לאשר Debug)
     if state == "unauthorized":
         side = "אלחוטית" if (transport == "wifi") else "בכבל"
         return {"state": "pairing", "text": f"מכשיר {side} מזוהה אך לא אושר ADB. אשר 'Always allow' ב-Quest."}
-
-    # התקן אוף-ליין / לא יציב
     if state == "offline":
         side = "אלחוטית" if (transport == "wifi") else "בכבל"
-        return {"state": "none", "text": f"מכשיר {side} במצב offline. נתק וחבר שוב / חבר USB מחדש."}
-
-    # התקן מוכן ("device")
+        return {"state": "none", "text": f"מכשיר {side} במצב offline. חבר מחדש."}
     if state == "device":
         if transport == "wifi":
             return {"state": "ready", "text": f"מכשיר מחובר אלחוטית: {serial}"}
         else:
             return {"state": "ready", "text": f"מכשיר מחובר בכבל: {serial}"}
-
-    # ברירת מחדל זהירה
-    return {"state": "none", "text": "לא ניתן לקבוע מצב חיבור. נסה לחבר מחדש."}
+    return {"state": "none", "text": "לא ניתן לקבוע מצב חיבור."}
 
 def _list_wlan_ifaces(serial: str) -> list[str]:
     """
@@ -265,7 +278,10 @@ def start_scrcpy(renderer: str = "OpenGL"):
     dev = first_device_or_none()
     if dev:
         args.append(f"--serial={dev}")
-
+        
     env = os.environ.copy()
     env["SDL_RENDER_DRIVER"] = sdl_driver
-    return subprocess.Popen(args, cwd=BIN_DIR, env=env, creationflags=CREATE_NO_WINDOW)
+
+ # IMPORTANT: run with cwd set to the folder containing scrcpy.exe
+    scrcpy_dir = os.path.dirname(SCRCPY)
+    return subprocess.Popen(args, cwd=scrcpy_dir, env=env, creationflags=CREATE_NO_WINDOW)

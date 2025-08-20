@@ -25,6 +25,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("LoginVRCast")
         self.setMinimumSize(600, 210)
         self.setLayoutDirection(Qt.RightToLeft)
+        
 
         # כפתורים
         self.cast_btn = QPushButton("שידור")
@@ -73,7 +74,7 @@ class MainWindow(QMainWindow):
         # חיבורים
         self.cast_btn.clicked.connect(on_cast)
         self.stop_btn.clicked.connect(on_stop)
-        self.wireless_btn.clicked.connect(on_wireless)
+        self.wireless_btn.clicked.connect(lambda: on_wireless(self.wireless_btn))
         self.renderer_combo.currentTextChanged.connect(on_renderer_changed)
 
         # רענון סטטוס

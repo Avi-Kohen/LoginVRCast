@@ -101,31 +101,98 @@ def status():
     # ברירת מחדל זהירה
     return {"state": "none", "text": "לא ניתן לקבוע מצב חיבור. נסה לחבר מחדש."}
 
+def _list_wlan_ifaces(serial: str) -> list[str]:
+    """
+    מאתר שמות ממשקים אלחוטיים (wlan*) ומעדיף כאלה שבמצב UP.
+    """
+    out = _run([ADB, "-s", serial, "shell", "ip", "-o", "link", "show"])
+    if out.returncode != 0:
+        return []
+    ifaces_up, ifaces_down = [], []
+    for line in out.stdout.splitlines():
+        # דוגמה: '3: wlan0: <BROADCAST,MULTICAST,UP,LOWER_UP> ...'
+        parts = line.split(":")
+        if len(parts) >= 3:
+            name = parts[1].strip()
+            if name.startswith("wlan"):
+                flags = parts[2]
+                if "UP" in flags:
+                    ifaces_up.append(name)
+                else:
+                    ifaces_down.append(name)
+    return ifaces_up + ifaces_down  # קודם UP, אחר כך השאר
+
+def _get_ip_from_iface(serial: str, iface: str) -> str | None:
+    # ip -o -4 addr show dev <iface>  => 'inet X.X.X.X/..'
+    out = _run([ADB, "-s", serial, "shell", "ip", "-o", "-4", "addr", "show", "dev", iface])
+    if out.returncode == 0:
+        m = re.search(r"\binet\s+(\d{1,3}(?:\.\d{1,3}){3})/", out.stdout)
+        if m:
+            return m.group(1)
+
+    # getprop dhcp.<iface>.ipaddress
+    out = _run([ADB, "-s", serial, "shell", "getprop", f"dhcp.{iface}.ipaddress"])
+    if out.returncode == 0:
+        val = (out.stdout or "").strip()
+        if re.match(r"^\d{1,3}(?:\.\d{1,3}){3}$", val):
+            return val
+
+    # ifconfig <iface> (לבניות ישנות)
+    out = _run([ADB, "-s", serial, "shell", "ifconfig", iface])
+    if out.returncode == 0:
+        m = re.search(r"\binet(?:\s+addr:|\s+)(\d{1,3}(?:\.\d{1,3}){3})", out.stdout)
+        if m:
+            return m.group(1)
+    return None
+
 def _wifi_ip(serial: str) -> str | None:
     """
-    IP דרך ממשק wlan0 (כמו באפליקציה שעובדת אצלך).
+    זיהוי IP אלחוטי אמין:
+    1) ip route get 8.8.8.8 -> 'src X.X.X.X'
+    2) אם אין, סרוק כל wlan* (UP תחילה) עם ip/addr/getprop/ifconfig
+    3) נפילה אחרונה: חיפוש ב-getprop על dhcp.wlan*.ipaddress
     """
-    out = _run([ADB, "-s", serial, "shell", "ip", "-f", "inet", "addr", "show", "wlan0"]).stdout
-    m = re.search(r"\binet\s+(\d{1,3}(?:\.\d{1,3}){3})", out)
-    return m.group(1) if m else None
+    # 1) מסלול ברירת מחדל
+    out = _run([ADB, "-s", serial, "shell", "ip", "route", "get", "8.8.8.8"])
+    if out.returncode == 0:
+        m = re.search(r"\bsrc\s+(\d{1,3}(?:\.\d{1,3}){3})", out.stdout)
+        if m:
+            return m.group(1)
+
+    # 2) כל wlan*
+    wlans = _list_wlan_ifaces(serial)
+    if not wlans:
+        wlans = ["wlan0", "wlan1"]  # נסיון "עיוור" אם הרשימה ריקה
+    for iface in wlans:
+        ip = _get_ip_from_iface(serial, iface)
+        if ip:
+            return ip
+
+    # 3) חיפוש כללי ב-getprop
+    out = _run([ADB, "-s", serial, "shell", "getprop"])
+    if out.returncode == 0:
+        m = re.search(r"dhcp\.(wlan\d*).*?ipaddress\]\s*:\s*\[(\d{1,3}(?:\.\d{1,3}){3})\]", out.stdout)
+        if m:
+            return m.group(2)
+    return None
 
 # ---------- one-click wireless ----------
 
 def wireless_auto():
     """
     זרימה אוטומטית:
-    1) אם כבר יש Wi‑Fi ב-`adb devices` → הצלחה מיד.
-    2) אחרת חפש USB במצב 'device' (או המתן קצת לאישור).
-    3) adb -s <usb> tcpip 5555
-    4) שלוף IP מ-wlan0
-    5) adb connect <ip>:5555
+      1) אם כבר מחובר Wi‑Fi → הצלחה מיד.
+      2) מצא USB 'device' (המתנה קצרה לאישור אם צריך).
+      3) adb tcpip 5555
+      4) חכה רגע קצר ואז שלוף IP (לא רק wlan0)
+      5) adb connect <ip>:5555
     """
     # 1) כבר מחובר אלחוטית?
     t, s, ser = quest_state()
     if t == "wifi" and s == "device":
         return True, f"המכשיר כבר מחובר אלחוטית ({ser}). אפשר לנתק את הכבל."
 
-    # 2) המתן עד 6 שניות לאישור USB (3 ניסיונות)
+    # 2) מצא USB 'device' (עד 6 שניות)
     usb = None
     for _ in range(3):
         tt, st, sr = quest_state()
@@ -141,14 +208,21 @@ def wireless_auto():
     if out.returncode != 0:
         return False, f"שגיאה במעבר ל-tcpip {WIRELESS_PORT}:\n{out.stdout}\n{out.stderr}"
 
-    # 4) שליפת IP
+    # 4) המתנה קצרה ואז שליפת IP
+    time.sleep(1.0)
     ip = _wifi_ip(usb)
     if not ip:
-        # נסה פעם נוספת אחרי רגע קטן (לפעמים ה‑wlan0 מתעדכן)
         time.sleep(1.0)
         ip = _wifi_ip(usb)
     if not ip:
-        return False, "לא נמצא IP ב-wlan0. ודא שה‑Wi‑Fi פעיל באותו ה‑LAN."
+        # דיאגנוסטיקה ממוקדת – תעזור אם עדיין נכשל
+        diag_route = _run([ADB, "-s", usb, "shell", "ip", "route"])
+        diag_addr  = _run([ADB, "-s", usb, "shell", "ip", "-o", "-4", "addr"])
+        return False, (
+            "לא נמצא IP אלחוטי. ודא שה‑Wi‑Fi פעיל ושהמחשב וה‑Quest באותה רשת.\n\n"
+            f"ip route:\n{diag_route.stdout}\n"
+            f"ip -o -4 addr:\n{diag_addr.stdout}\n"
+        )
 
     # 5) חיבור
     target = f"{ip}:{WIRELESS_PORT}"
@@ -158,6 +232,20 @@ def wireless_auto():
         return False, f"חיבור אל {target} נכשל:\n{out.stdout}\n{out.stderr}"
 
     return True, f"החיבור האלחוטי הצליח אל {target}. אפשר לנתק את הכבל."
+
+def wireless_disconnect():
+    """
+    ניתוק חיבור אלחוטי (adb disconnect) וחזרה ל-USB.
+    """
+    dev = first_device_or_none()
+    if dev and _is_ip_serial(dev):
+        # אם אנחנו כרגע על Wi-Fi, ננתק
+        _run([ADB, "disconnect", dev])
+        # החזר ל-USB (יעזור ל-ADB לחזור למצב חיבור בכבל)
+        _run([ADB, "usb"])
+        return True, f"החיבור האלחוטי נותק ({dev})."
+    return False, "לא נמצא חיבור אלחוטי פעיל לנתק."
+
 
 # ---------- renderer + launch (ללא שינויי רינדור שלך) ----------
 

@@ -2,10 +2,12 @@ import sys
 from PySide6.QtCore import Qt, QLocale
 from PySide6.QtWidgets import QApplication, QMessageBox
 from app.ui import MainWindow
-from app.scrcpy_runner import status, wireless_auto, start_scrcpy
+from app.scrcpy_runner import status, wireless_auto, wireless_disconnect, start_scrcpy
 
 _last_proc = None
 _renderer = "OpenGL"  # default
+_is_wireless = False   # דגל פנימי
+
 
 def _stop_if_running():
     global _last_proc
@@ -28,12 +30,24 @@ def on_cast():
 def on_stop():
     _stop_if_running()
 
-def on_wireless():
-    ok, msg = wireless_auto()
-    if ok:
-        QMessageBox.information(None, "חיבור אלחוטי", msg)
+def on_wireless(btn_widget):
+    global _is_wireless
+    if not _is_wireless:
+        ok, msg = wireless_auto()
+        if ok:
+            _is_wireless = True
+            btn_widget.setText("נתק אלחוטי")
+            QMessageBox.information(None, "חיבור אלחוטי", msg)
+        else:
+            QMessageBox.warning(None, "חיבור אלחוטי", msg)
     else:
-        QMessageBox.warning(None, "חיבור אלחוטי", msg)
+        ok, msg = wireless_disconnect()
+        if ok:
+            _is_wireless = False
+            btn_widget.setText("חיבור אלחוטי")
+            QMessageBox.information(None, "ניתוק אלחוטי", msg)
+        else:
+            QMessageBox.warning(None, "ניתוק אלחוטי", msg)
 
 def on_renderer_changed(name: str):
     global _renderer

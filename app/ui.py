@@ -23,7 +23,7 @@ class MainWindow(QMainWindow):
     def __init__(self, on_cast, on_wireless, on_renderer_changed, on_cropmode_changed, on_stop, get_status):
         super().__init__()
         self.setWindowTitle("LoginVRCast")
-        self.setMinimumSize(600, 210)
+        self.setMinimumSize(400, 210)
         self.setLayoutDirection(Qt.RightToLeft)
 
         # כפתורים

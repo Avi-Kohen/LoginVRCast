@@ -1,11 +1,11 @@
 import sys
 from PySide6.QtCore import Qt, QLocale
-from PySide6.QtWidgets import QApplication, QInputDialog
+from PySide6.QtWidgets import QApplication, QMessageBox
 from app.ui import MainWindow
-from app.scrcpy_runner import status, wireless_connect, start_scrcpy
+from app.scrcpy_runner import status, wireless_auto, start_scrcpy
 
 _last_proc = None
-_renderer = "OpenGL"  # ברירת מחדל
+_renderer = "OpenGL"  # default
 
 def _stop_if_running():
     global _last_proc
@@ -19,27 +19,25 @@ def _stop_if_running():
 
 def on_cast():
     global _last_proc, _renderer
-    _stop_if_running()  # מאפשר החלפת Renderer בנקייה
+    _stop_if_running()
     try:
         _last_proc = start_scrcpy(_renderer)
     except Exception as e:
-        print("שגיאה:", e)
+        QMessageBox.critical(None, "שגיאה", f"שגיאה בהפעלה: {e}")
 
 def on_stop():
     _stop_if_running()
 
 def on_wireless():
-    ip_port, ok = QInputDialog.getText(None, "חיבור אלחוטי", "הכנס IP:PORT (לדוגמה 192.168.1.50:5555):")
-    if not ok or ":" not in ip_port:
-        return
-    code, ok2 = QInputDialog.getText(None, "צימוד (לא חובה)", "קוד צימוד (אם מופיע במסך ה‑Quest):")
-    code = code if ok2 and code.strip() else None
-    rc = wireless_connect(ip_port.strip(), code)
-    print("תוצאה:", "הצליח" if rc == 0 else f"נכשל ({rc})")
+    ok, msg = wireless_auto()
+    if ok:
+        QMessageBox.information(None, "חיבור אלחוטי", msg)
+    else:
+        QMessageBox.warning(None, "חיבור אלחוטי", msg)
 
 def on_renderer_changed(name: str):
     global _renderer
-    _renderer = name  # ייכנס לתוקף בלחיצת "שידור" הבאה
+    _renderer = name  # applied on next "שידור"
 
 def get_status():
     s = status()

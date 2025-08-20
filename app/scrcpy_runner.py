@@ -1,4 +1,4 @@
-import os, re, subprocess
+import os, re, subprocess, time
 
 APP_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BIN_DIR  = os.path.join(APP_ROOT, "bin")
@@ -6,186 +6,178 @@ BIN_DIR  = os.path.join(APP_ROOT, "bin")
 ADB = os.path.join(BIN_DIR, "adb.exe")
 SCRCPY = os.path.join(BIN_DIR, "scrcpy.exe")
 
+CREATE_NO_WINDOW = 0x08000000
+ADB_TIMEOUT_SEC  = 4
+WIRELESS_PORT    = "5555"
+
 def _run(cmd):
-    return subprocess.run(cmd, cwd=BIN_DIR, text=True, capture_output=True, encoding="utf-8", errors="ignore")
+    return subprocess.run(
+        cmd, cwd=BIN_DIR, text=True, capture_output=True, encoding="utf-8",
+        errors="ignore", timeout=ADB_TIMEOUT_SEC, creationflags=CREATE_NO_WINDOW
+    )
 
-def adb_devices():
-    if not os.path.exists(ADB):
-        return []
-    out = _run([ADB, "devices"])
-    if out.returncode != 0:
-        return []
-    lines = [l.strip() for l in out.stdout.splitlines()[1:] if l.strip()]
-    return [l.split()[0] for l in lines if "device" in l]
+# ---------- helpers from the working app ----------
 
-def first_device_or_none():
-    """עדיפות ל-Wi-Fi (IP:PORT), אחרת USB"""
-    devs = adb_devices()
-    if not devs:
-        return None
-    # קודם חפש IP:PORT
-    for d in devs:
-        if _is_ip_serial(d):
-            return d
-    # אחרת חזור על הראשון (USB)
-    return devs[0]
+def _devices_output() -> str:
+    return _run([ADB, "devices", "-l"]).stdout if os.path.exists(ADB) else ""
 
 def _is_ip_serial(serial: str) -> bool:
-    import re
     return ":" in serial and re.match(r"^\d{1,3}(\.\d{1,3}){3}:\d{2,5}$", serial) is not None
 
+def quest_state():
+    """
+    מחזיר (transport, state, serial) עם עדיפות ל‑Wi‑Fi.
+    transport ∈ {"wifi","usb",None}, state ∈ {"device","unauthorized","offline",""}
+    """
+    wifi_row = None
+    usb_row  = None
+    out = _devices_output().splitlines()
+    for line in out[1:]:
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        serial, state = parts[0], parts[1]
+        if _is_ip_serial(serial):
+            if wifi_row is None:
+                wifi_row = ("wifi", state, serial)
+        else:
+            if usb_row is None:
+                usb_row = ("usb", state, serial)
+    return wifi_row or usb_row or (None, "", None)
+
+def adb_devices():
+    # רק רשימת serial-ים במצב device (נוח לשימוש פנימי)
+    out = _devices_output().splitlines()
+    res = []
+    for line in out[1:]:
+        parts = line.split()
+        if len(parts) >= 2 and parts[1] == "device":
+            res.append(parts[0])
+    return res
+
+def first_device_or_none():
+    # עדיפות ל‑Wi‑Fi, אחרת USB
+    transport, state, serial = quest_state()
+    return serial if serial else None
+
 def first_usb_device_or_none():
-    """USB בלבד"""
-    devs = adb_devices()
-    for d in devs:
-        if not _is_ip_serial(d):
-            return d
+    for line in _devices_output().splitlines()[1:]:
+        parts = line.split()
+        if len(parts) >= 2 and parts[1] in ("device", "unauthorized", "offline"):
+            serial = parts[0]
+            if not _is_ip_serial(serial):
+                return serial
     return None
 
 def status():
-    dev = first_device_or_none()
-    return {"state": "ready", "text": f"מכשיר מזוהה: {dev}"} if dev else {"state": "none", "text": "אין מכשיר מחובר"}
-
-def wireless_connect(ip_port: str, pairing_code: str = None):
-    # kept for manual mode (not used in auto flow)
-    if pairing_code:
-        subprocess.call([ADB, "pair", ip_port, pairing_code])
-    return subprocess.call([ADB, "connect", ip_port])
-
-def _get_ip_from_iface(serial: str, iface: str) -> str | None:
-    # 2a) ip -o -4 addr show iface
-    out = _run([ADB, "-s", serial, "shell", "ip", "-o", "-4", "addr", "show", iface])
-    if out.returncode == 0:
-        m = re.search(r"\binet\s+(\d{1,3}(?:\.\d{1,3}){3})/", out.stdout)
-        if m:
-            return m.group(1)
-
-    # 3) getprop dhcp.<iface>.ipaddress
-    out = _run([ADB, "-s", serial, "shell", "getprop", f"dhcp.{iface}.ipaddress"])
-    if out.returncode == 0:
-        val = (out.stdout or "").strip()
-        if re.match(r"^\d{1,3}(?:\.\d{1,3}){3}$", val):
-            return val
-
-    # 4) ifconfig iface
-    out = _run([ADB, "-s", serial, "shell", "ifconfig", iface])
-    if out.returncode == 0:
-        # תבניות אפשריות: 'inet addr:X.X.X.X' או 'inet X.X.X.X'
-        m = re.search(r"\binet(?:\s+addr:|\s+)(\d{1,3}(?:\.\d{1,3}){3})", out.stdout)
-        if m:
-            return m.group(1)
-    return None
-
-def _get_wifi_ip(serial: str) -> str | None:
     """
-    שליפת IP אלחוטי בצורה עמידה:
-    1) ip route get 8.8.8.8 -> 'dev <IFACE> src X.X.X.X'
-    2) ip -o -4 addr show <IFACE> -> ... 'inet X.X.X.X/..'
-    3) getprop dhcp.<IFACE>.ipaddress
-    4) ifconfig <IFACE> -> 'inet addr:X.X.X.X' או 'inet X.X.X.X'
-    אם לא נמצא iface, ננסה ברירת מחדל 'wlan0'/'wlan1'.
+    מצב קריא ל-UI על בסיס quest_state():
+    - state: "ready" | "pairing" | "none" | "casting" (ה-"casting" ייקבע ב-main.py אם תהליך חי)
+    - text: טקסט ידידותי להצגה למשתמש
     """
-    # 1) נסה למצוא גם iface וגם src
-    out = _run([ADB, "-s", serial, "shell", "ip", "route", "get", "8.8.8.8"])
-    if out.returncode == 0:
-        # דוגמה: '... dev wlan0 src 192.168.1.50 ...'
-        m = re.search(r"\bdev\s+(\S+)", out.stdout)
-        iface = m.group(1) if m else None
-        m = re.search(r"\bsrc\s+(\d{1,3}(?:\.\d{1,3}){3})", out.stdout)
-        if m:
-            return m.group(1)
-        # יש iface אבל אין src? ננסה שלב 2 עם iface שמצאנו
-        if iface:
-            ip = _get_ip_from_iface(serial, iface)
-            if ip:
-                return ip
+    transport, state, serial = quest_state()
 
-    # 2) אם לא מצאנו iface קודם, ננסה לבדוק מה יש ברשימת נתיבים כללית
-    out = _run([ADB, "-s", serial, "shell", "ip", "route"])
-    iface = None
-    if out.returncode == 0:
-        # נחפש 'wlanX' בשורות 'default via ... dev wlan0'
-        m = re.search(r"\bdev\s+(wlan\d*)", out.stdout)
-        if m:
-            iface = m.group(1)
+    # אין שום התקן נראה
+    if not serial:
+        return {"state": "none", "text": "אין מכשיר מחובר"}
 
-    # אם עדיין אין iface, ננסה ניחוש נפוץ
-    for candidate in [iface, "wlan0", "wlan1"]:
-        if not candidate:
-            continue
-        ip = _get_ip_from_iface(serial, candidate)
-        if ip:
-            return ip
+    # התקן מזוהה אבל לא מוכן (צריך לאשר Debug)
+    if state == "unauthorized":
+        side = "אלחוטית" if (transport == "wifi") else "בכבל"
+        return {"state": "pairing", "text": f"מכשיר {side} מזוהה אך לא אושר ADB. אשר 'Always allow' ב-Quest."}
 
-    return None
+    # התקן אוף-ליין / לא יציב
+    if state == "offline":
+        side = "אלחוטית" if (transport == "wifi") else "בכבל"
+        return {"state": "none", "text": f"מכשיר {side} במצב offline. נתק וחבר שוב / חבר USB מחדש."}
+
+    # התקן מוכן ("device")
+    if state == "device":
+        if transport == "wifi":
+            return {"state": "ready", "text": f"מכשיר מחובר אלחוטית: {serial}"}
+        else:
+            return {"state": "ready", "text": f"מכשיר מחובר בכבל: {serial}"}
+
+    # ברירת מחדל זהירה
+    return {"state": "none", "text": "לא ניתן לקבוע מצב חיבור. נסה לחבר מחדש."}
+
+def _wifi_ip(serial: str) -> str | None:
+    """
+    IP דרך ממשק wlan0 (כמו באפליקציה שעובדת אצלך).
+    """
+    out = _run([ADB, "-s", serial, "shell", "ip", "-f", "inet", "addr", "show", "wlan0"]).stdout
+    m = re.search(r"\binet\s+(\d{1,3}(?:\.\d{1,3}){3})", out)
+    return m.group(1) if m else None
+
+# ---------- one-click wireless ----------
 
 def wireless_auto():
     """
-    One-click wireless עם דיבוג טוב:
-      - USB בלבד (אם כבר IP מחובר, נחזיר הצלחה)
-      - adb tcpip 5555
-      - שליפת כתובת IP יציבה (ראה למעלה)
-      - adb connect <ip>:5555
+    זרימה אוטומטית:
+    1) אם כבר יש Wi‑Fi ב-`adb devices` → הצלחה מיד.
+    2) אחרת חפש USB במצב 'device' (או המתן קצת לאישור).
+    3) adb -s <usb> tcpip 5555
+    4) שלוף IP מ-wlan0
+    5) adb connect <ip>:5555
     """
-    usb = first_usb_device_or_none()
+    # 1) כבר מחובר אלחוטית?
+    t, s, ser = quest_state()
+    if t == "wifi" and s == "device":
+        return True, f"המכשיר כבר מחובר אלחוטית ({ser}). אפשר לנתק את הכבל."
+
+    # 2) המתן עד 6 שניות לאישור USB (3 ניסיונות)
+    usb = None
+    for _ in range(3):
+        tt, st, sr = quest_state()
+        if tt == "usb" and st == "device":
+            usb = sr
+            break
+        time.sleep(2)
     if not usb:
-        ip_dev = first_device_or_none()
-        if ip_dev and _is_ip_serial(ip_dev):
-            return True, f"המכשיר כבר מחובר אלחוטית ({ip_dev}). אפשר לנתק את הכבל."
-        return False, "לא נמצא מכשיר USB. ודא שה‑Quest מחובר וש־ADB מזהה אותו (Developer Mode + אישור Debug)."
+        return False, "לא נמצא USB במצב 'device'. ודא שחיברת כבל ואישרת Debug (Always allow)."
 
-    # מעבר ל‑tcpip 5555
-    out = _run([ADB, "-s", usb, "tcpip", "5555"])
+    # 3) מעבר ל-tcpip
+    out = _run([ADB, "-s", usb, "tcpip", WIRELESS_PORT])
     if out.returncode != 0:
-        return False, f"שגיאה במעבר למצב אלחוטי (tcpip 5555):\nSTDOUT:\n{out.stdout}\nSTDERR:\n{out.stderr}"
+        return False, f"שגיאה במעבר ל-tcpip {WIRELESS_PORT}:\n{out.stdout}\n{out.stderr}"
 
-    # שליפת IP אמינה
-    ip = _get_wifi_ip(usb)
+    # 4) שליפת IP
+    ip = _wifi_ip(usb)
     if not ip:
-        # נציג פלט דיאגנוסטיקה שיעזור
-        diag_route = _run([ADB, "-s", usb, "shell", "ip", "route"])
-        diag_addr  = _run([ADB, "-s", usb, "shell", "ip", "-o", "-4", "addr"])
-        diag_prop  = _run([ADB, "-s", usb, "shell", "getprop"])
-        return False, (
-            "לא הצלחתי לאתר את כתובת ה‑IP של המכשיר.\n"
-            "בדוק ש‑Wi‑Fi פעיל ושאתה מחובר לאותה רשת.\n\n"
-            f"ip route:\n{diag_route.stdout}\n"
-            f"ip -o -4 addr:\n{diag_addr.stdout}\n"
-            # getprop ארוך—אם תרצה נציג רק אם צריך:
-            # f"getprop (קיצור):\n{diag_prop.stdout[:800]}\n"
-        )
+        # נסה פעם נוספת אחרי רגע קטן (לפעמים ה‑wlan0 מתעדכן)
+        time.sleep(1.0)
+        ip = _wifi_ip(usb)
+    if not ip:
+        return False, "לא נמצא IP ב-wlan0. ודא שה‑Wi‑Fi פעיל באותו ה‑LAN."
 
-    target = f"{ip}:5555"
+    # 5) חיבור
+    target = f"{ip}:{WIRELESS_PORT}"
     out = _run([ADB, "connect", target])
-    text = (out.stdout + out.stderr).lower()
-    if out.returncode != 0 or ("connected to" not in text and "already connected" not in text):
-        return False, f"חיבור אלחוטי נכשל אל {target}:\nSTDOUT:\n{out.stdout}\nSTDERR:\n{out.stderr}"
+    txt = (out.stdout + out.stderr).lower()
+    if out.returncode != 0 or ("connected to" not in txt and "already connected" not in txt):
+        return False, f"חיבור אל {target} נכשל:\n{out.stdout}\n{out.stderr}"
 
     return True, f"החיבור האלחוטי הצליח אל {target}. אפשר לנתק את הכבל."
 
+# ---------- renderer + launch (ללא שינויי רינדור שלך) ----------
+
 def _map_renderer_name(human_name: str) -> str:
     name = (human_name or "").strip().lower()
-    if name.startswith("open"):
-        return "opengl"
-    return "direct3d"
+    return "opengl" if name.startswith("open") else "direct3d"
 
 def start_scrcpy(renderer: str = "OpenGL"):
     sdl_driver = _map_renderer_name(renderer)
-
     args = [
         SCRCPY,
         "--no-audio",
         "--crop=1600:904:2017:510",
         "--always-on-top",
-        f"--render-driver={sdl_driver}",  # CLI hint to SDL
+        f"--render-driver={sdl_driver}",
     ]
-
     dev = first_device_or_none()
     if dev:
         args.append(f"--serial={dev}")
 
-    # Pass a fresh environment so renderer changes take effect every run
     env = os.environ.copy()
     env["SDL_RENDER_DRIVER"] = sdl_driver
-
-    return subprocess.Popen(args, cwd=BIN_DIR, env=env)
+    return subprocess.Popen(args, cwd=BIN_DIR, env=env, creationflags=CREATE_NO_WINDOW)

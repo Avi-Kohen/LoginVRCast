@@ -3,7 +3,7 @@ import os, sys, re, subprocess, time
 def resource_path(name: str) -> str:
     """Resolve bundled resources for dev, onedir portable, and onefile."""
     if hasattr(sys, "_MEIPASS"):  # PyInstaller one-file temp dir
-        p = os.path.join(sys._MEIPASS, name)
+        p = os.path.join(getattr(sys, "_MEIPASS", os.path.abspath(".")), name)
         if os.path.exists(p):
             return p
     # portable onedir: alongside exe or in exe_dir\bin

@@ -67,9 +67,9 @@ def get_status():
 
 def main():
     app = QApplication(sys.argv)
-    QLocale.setDefault(QLocale(QLocale.Hebrew, QLocale.Israel))
-    app.setLayoutDirection(Qt.RightToLeft)
-
+    QLocale.setDefault(QLocale(QLocale.Language.Hebrew, QLocale.Country.Israel))
+    app.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+    app.setApplicationName("LoginVRCast")
     w = MainWindow(on_cast, on_wireless, on_renderer_changed, on_cropmode_changed, on_stop, get_status)
     w.show()
     sys.exit(app.exec())
